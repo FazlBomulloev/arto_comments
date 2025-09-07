@@ -30,9 +30,9 @@ class Channel(Base):
     comments_number_range = Column(Integer, default=10)  # Разброс
     
     # Новые параметры для рандома публикаций
-    posts_selection_chance = Column(Integer, default=50)  # Шанс выбора поста для комментирования
-    posts_min_interval = Column(Integer, default=30)  # Минимальный интервал между постами (минуты)
-    posts_max_interval = Column(Integer, default=120)  # Максимальный интервал между постами (минуты)
+    post_selection_chance = Column(Integer, default=50)  # Шанс выбора поста для комментирования
+    post_min_interval = Column(Integer, default=30)  # Минимальный интервал между постами (минуты)
+    post_max_interval = Column(Integer, default=120)  # Максимальный интервал между постами (минуты)
     
     # Параметры лайков
     likes_on_posts_chance = Column(Integer, default=20)  # Шанс лайка на пост
