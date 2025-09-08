@@ -13,6 +13,7 @@ from typing import List
 from aiogram import F
 from src.tasks.tasks import CommentTask, CommentTaskMessage, LikeCommentTask, LikeCommentTaskMessage
 from src.cfg import config
+from src.accounts.status_manager import AccountStatusManager  # НОВОЕ
 
 broker = config.broker
 
@@ -81,14 +82,8 @@ def clean_comments(raw_comments: str) -> List[str]:
 
 async def get_random_accounts(session, count: int, channel_id: int) -> List[Account]:
     """Возвращает список случайных активных аккаунтов для канала."""
-    result = await session.execute(
-        select(Account)
-        .where(Account.status == 'active')
-        .where(Account.channel_id == channel_id)
-        .order_by(func.random())
-        .limit(count)
-    )
-    return result.scalars().all()
+    # ИЗМЕНЕНО: Используем новый менеджер статусов для получения только активных аккаунтов
+    return await AccountStatusManager.get_active_accounts(channel_id, count)
 
 async def should_comment_on_post(session, channel: Channel, channel_name: str, post_id: int) -> bool:
     """Проверяет, стоит ли комментировать данный пост на основе настроек канала"""

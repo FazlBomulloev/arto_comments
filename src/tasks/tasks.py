@@ -15,6 +15,7 @@ from src.cfg import config
 from src.db import get_session
 from src.db.models import Account, CommentActivity
 from src.params.db_manager import DatabaseManager
+from src.accounts.status_manager import AccountStatusManager  # НОВОЕ
 
 broker = config.broker
 
@@ -242,7 +243,15 @@ async def process_comment_task(task: CommentTask):
             like_chance=task.like_chance,
             available_reactions=available_reactions,
             invite_link=task.invite_link,  # Новый параметр
-            account_number=task.account_number  # Новый параметр для логирования
+            account_number=task.account_number,  # Новый параметр для логирования
+            channel_username=task.channel_username  # НОВОЕ: передаем username канала
+        )
+
+        # НОВОЕ: Обновление статуса аккаунта
+        await AccountStatusManager.update_account_status(
+            account_number=task.account_number,
+            success=result["success"],
+            error_message=result.get("error")
         )
 
         # Обновляем статистику в БД
@@ -278,6 +287,12 @@ async def process_comment_task(task: CommentTask):
         return result
 
     except Exception as e:
+        # НОВОЕ: Обновление статуса при исключении
+        await AccountStatusManager.update_account_status(
+            account_number=task.account_number,
+            success=False,
+            error_message=str(e)
+        )
         logger.error(f"❌ [PROCESS] [{task.account_number}] Ошибка обработки задачи комментирования: {e}")
         raise
 
@@ -342,6 +357,13 @@ async def process_like_comment_task(task: LikeCommentTask):
             account_number=task.account_number  # Для логирования
         )
 
+        # НОВОЕ: Обновление статуса аккаунта
+        await AccountStatusManager.update_account_status(
+            account_number=task.account_number,
+            success=success,
+            error_message=None if success else "Не удалось поставить лайк"
+        )
+
         # Обновляем статистику
         if success:
             async with get_session() as session:
@@ -364,6 +386,12 @@ async def process_like_comment_task(task: LikeCommentTask):
         return success
 
     except Exception as e:
+        # НОВОЕ: Обновление статуса при исключении
+        await AccountStatusManager.update_account_status(
+            account_number=task.account_number,
+            success=False,
+            error_message=str(e)
+        )
         logger.error(f"❌ [LIKE] [{task.account_number}] Ошибка обработки задачи лайка комментария: {e}")
         raise
 

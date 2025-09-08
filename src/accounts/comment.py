@@ -135,7 +135,7 @@ async def post_comment_with_session(
         available_reactions: list = None,
         invite_link: str = None,
         account_number: str = "unknown",
-        channel_username: str = None
+        channel_username: str = None  # НОВЫЙ ПАРАМЕТР
 ) -> dict:
     """Функция для отправки комментариев к постам в группах с подпиской на канал и вступлением в группу"""
     client = None
@@ -282,8 +282,6 @@ async def post_comment_with_session(
                 result["error"] = f"Ошибка схемы Telethon: {str(retry_error)}"
                 logger.error(f"❌ [COMMENT] [{account_number}] Повторная попытка не удалась: {retry_error}")
         
-
-
         except ChatWriteForbiddenError:
             result["error"] = "Нет прав на комментирование в группе"
             logger.warning(f"⛔ [COMMENT] [{account_number}] Нет прав на комментирование")
@@ -375,4 +373,4 @@ async def like_comment_with_session(
             try:
                 await client.disconnect()
             except:
-                pass 
+                pass

@@ -20,6 +20,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from redis.asyncio import Redis
 
 from src.db.db_manager import init_db, drop_db
+from src.accounts.recovery_scheduler import recovery_scheduler  # НОВОЕ
 
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -78,6 +79,13 @@ async def main():
     dp.include_router(comments_router)
     setup_dialogs(dp)
 
+    # НОВОЕ: Запуск планировщика восстановления аккаунтов
+    try:
+        await recovery_scheduler.start()
+        logger.info("✅ Планировщик восстановления аккаунтов запущен")
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска планировщика восстановления: {e}")
+
     # 4. Запуск бота
     try:
         logger.info("Starting bot polling")
@@ -85,6 +93,13 @@ async def main():
     except Exception as e:
         logger.critical(f"Bot crash: {str(e)[:200]}")  # Ограниченная длина
     finally:
+        # НОВОЕ: Остановка планировщика
+        try:
+            await recovery_scheduler.stop()
+            logger.info("Планировщик восстановления остановлен")
+        except Exception as e:
+            logger.error(f"Ошибка остановки планировщика: {e}")
+        
         await bot.session.close()
         logger.info("Bot stopped")
 

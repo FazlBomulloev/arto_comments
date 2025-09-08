@@ -7,6 +7,7 @@ from src.tasks.tasks import app as tasks_app
 from src.cfg import config
 from src.db.db_manager import init_db
 from src.utils.uvloop_manager import UVLoopManager
+from src.accounts.recovery_scheduler import recovery_scheduler  # НОВОЕ
 
 
 async def main():
@@ -40,8 +41,13 @@ async def main():
         logger.error(f"Database connection error: {str(e)[:200]}")
         return
 
-    # Запуск обработчика задач
+    # НОВОЕ: Запуск планировщика в отдельной задаче
+    scheduler_task = None
     try:
+        scheduler_task = asyncio.create_task(recovery_scheduler.start())
+        logger.info("Планировщик восстановления запущен в фоне")
+        
+        # Запуск обработчика задач
         logger.info("Starting tasks processor")
         await tasks_app.run()
     except KeyboardInterrupt:
@@ -49,6 +55,14 @@ async def main():
     except Exception as e:
         logger.critical(f"Tasks processor error: {str(e)[:200]}")
     finally:
+        # НОВОЕ: Останавливаем планировщик
+        if scheduler_task:
+            try:
+                await recovery_scheduler.stop()
+                logger.info("Планировщик восстановления остановлен")
+            except Exception as e:
+                logger.error(f"Ошибка остановки планировщика: {e}")
+        
         logger.info("Tasks processor stopped")
 
 

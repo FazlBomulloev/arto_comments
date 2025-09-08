@@ -34,3 +34,9 @@ class stats(StatesGroup):
     channel_select = State()
     show_stats = State()
     detailed_stats = State()  # Новое состояние для детальной статистики
+
+# НОВОЕ: Состояния для управления аккаунтами
+class account_management(StatesGroup):
+    main_menu = State()
+    channel_stats = State()
+    force_recovery = State()

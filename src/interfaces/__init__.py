@@ -6,6 +6,7 @@ from .users.dialogs.channels_dialogs.add_agents import add_agent_dialog
 from .users.dialogs.channels_dialogs.add_accounts import accounts_dialog
 from .users.dialogs.settings import settings_dialog
 from .users.dialogs.stats import stats_dialog
+from .users.dialogs.accounts_management import accounts_management_dialog  # НОВОЕ
 
 def get_all_routers() -> list[Router]:
     """Возвращает список всех роутеров для регистрации"""
@@ -16,5 +17,6 @@ def get_all_routers() -> list[Router]:
         add_agent_dialog,
         accounts_dialog,
         settings_dialog,
-        stats_dialog
+        stats_dialog,
+        accounts_management_dialog  # НОВОЕ
     ]
