@@ -11,9 +11,11 @@ class CommentTask(BaseModel):
     delay: float = 0.0
     like_chance: int = 20
     reaction_types: List[str] = ["❤️", "👍", "🔥"]
-    # Новые поля для автоопределения группы обсуждений
+    # Новые поля для работы с группами обсуждений
     discussion_group_id: Optional[int] = None  # ID группы обсуждений
     sender_chat_id: Optional[int] = None  # ID канала-отправителя
+    invite_link: Optional[str] = None  # Инвайт ссылка для вступления в группу
+    channel_username: Optional[str] = None  # Username канала для подписки
 
 class CommentTaskMessage(BaseModel):
     data: List[CommentTask]

@@ -8,7 +8,8 @@ class channels(StatesGroup):
     channel_menu = State()
     add_channel = State()
     confirm_channel = State()
-    enter_channel_name=State()
+    enter_channel_username = State()  # Новое состояние для ввода username канала
+    enter_invite_link = State()       # Новое состояние для ввода инвайт ссылки
     upload_list = State()
     edit_param = State()  # Объединенное состояние для редактирования любых параметров
     upload_photos = State()

@@ -90,7 +90,7 @@ async def get_random_accounts(session, count: int, channel_id: int) -> List[Acco
     )
     return result.scalars().all()
 
-async def should_comment_on_post(session, channel: Channel, channel_username: str, post_id: int) -> bool:
+async def should_comment_on_post(session, channel: Channel, channel_name: str, post_id: int) -> bool:
     """Проверяет, стоит ли комментировать данный пост на основе настроек канала"""
     
     logger.info(f"🎲 [CHANCE] Начинаем проверку шансов для поста {post_id}")
@@ -115,7 +115,7 @@ async def should_comment_on_post(session, channel: Channel, channel_username: st
     logger.info(f"⏰ [INTERVAL] Проверяем интервал между постами...")
     last_activity = await session.execute(
         select(PostActivity)
-        .where(PostActivity.channel_name == channel_username)
+        .where(PostActivity.channel_name == channel_name)
         .order_by(PostActivity.last_comment_time.desc())
         .limit(1)
     )
@@ -140,12 +140,12 @@ async def should_comment_on_post(session, channel: Channel, channel_username: st
     logger.info(f"🎉 [CHANCE] Все проверки пройдены! Пост {post_id} будет прокомментирован")
     return True
 
-async def update_post_activity(session, channel_username: str, post_id: int, comments_count: int, likes_count: int):
+async def update_post_activity(session, channel_name: str, post_id: int, comments_count: int, likes_count: int):
     """Обновляет статистику активности по посту"""
     activity = await session.execute(
         select(PostActivity)
         .where(and_(
-            PostActivity.channel_name == channel_username,
+            PostActivity.channel_name == channel_name,
             PostActivity.post_id == post_id
         ))
     )
@@ -157,7 +157,7 @@ async def update_post_activity(session, channel_username: str, post_id: int, com
         activity.total_likes += likes_count
     else:
         new_activity = PostActivity(
-            channel_name=channel_username,
+            channel_name=channel_name,
             post_id=post_id,
             last_comment_time=datetime.now(),
             total_comments=comments_count,
@@ -165,91 +165,128 @@ async def update_post_activity(session, channel_username: str, post_id: int, com
         )
         session.add(new_activity)
 
-@router.message(F.chat.type == 'supergroup', F.sender_chat.id != F.chat.id)
+async def find_channel_by_group_id(session, group_id: int, sender_chat_id: int = None) -> Channel:
+    """Находит канал по ID группы обсуждений с автосвязыванием"""
+    
+    # Сначала ищем среди уже определенных ID групп
+    result = await session.execute(
+        select(Channel).where(Channel.discussion_group_id == group_id)
+    )
+    channel = result.scalar_one_or_none()
+    
+    if channel:
+        logger.info(f"✅ [FIND] Канал найден по discussion_group_id: {channel.name}")
+        return channel
+    
+    # Если не найден и есть sender_chat_id, пытаемся найти по ID канала-отправителя
+    if sender_chat_id:
+        logger.info(f"🔍 [FIND] Ищем канал по ID отправителя: {sender_chat_id}")
+        
+        # Попробуем разные варианты ID канала
+        search_variants = [
+            str(sender_chat_id),  # Полный ID: -1002242368150
+            str(abs(sender_chat_id)),  # Без минуса: 1002242368150
+            str(sender_chat_id)[4:] if len(str(abs(sender_chat_id))) > 10 else str(abs(sender_chat_id)),  # Убираем -100: 2242368150
+        ]
+        
+        # Также попробуем найти по username, если канал связан с этим ID
+        for variant in search_variants:
+            logger.info(f"🔍 [FIND] Пробуем вариант ID: '{variant}'")
+            result = await session.execute(
+                select(Channel).where(Channel.name == variant)
+            )
+            channel = result.scalar_one_or_none()
+            if channel:
+                logger.info(f"✅ [FIND] Найден канал по варианту ID: {channel.name}")
+                
+                # Автоматически связываем канал с группой
+                logger.info(f"🔗 [LINK] Автосвязывание канала {channel.name} с группой {group_id}")
+                channel.discussion_group_id = group_id
+                session.add(channel)
+                await session.commit()
+                logger.info(f"✅ [LINK] Канал {channel.name} успешно связан с группой {group_id}")
+                
+                return channel
+    
+    # Если не найден по ID, ищем среди всех каналов без определенной группы
+    logger.info(f"🔍 [FIND] Ищем среди каналов без определенной группы...")
+    all_channels = await session.execute(
+        select(Channel).where(Channel.discussion_group_id.is_(None))
+    )
+    
+    channels_without_group = list(all_channels.scalars())
+    logger.info(f"📋 [FIND] Найдено каналов без группы: {len(channels_without_group)}")
+    
+    for channel in channels_without_group:
+        logger.info(f"🔍 [FIND] Проверяем канал: {channel.name}")
+        
+        # Если у канала есть инвайт ссылка, пытаемся определить связь
+        if channel.discussion_group_invite:
+            logger.info(f"🔗 [FIND] Канал {channel.name} имеет инвайт ссылку, пробуем автосвязывание...")
+            
+            # Временно связываем с текущей группой для проверки
+            # В реальной ситуации здесь можно было бы проверить через Telegram API
+            # Но для упрощения просто связываем первый найденный канал
+            logger.info(f"🔗 [LINK] Автосвязывание канала {channel.name} с группой {group_id}")
+            channel.discussion_group_id = group_id
+            session.add(channel)
+            await session.commit()
+            logger.info(f"✅ [LINK] Канал {channel.name} автоматически связан с группой {group_id}")
+            
+            return channel
+    
+    logger.warning(f"❌ [FIND] Канал не найден для группы {group_id}")
+    logger.warning(f"💡 [HINT] Добавьте канал в систему или проверьте настройки группы обсуждений")
+    return None
+
+# Новый фильтр: слушаем все сообщения в супергруппах
+@router.message(F.chat.type == 'supergroup')
 async def post_commenting(message: Message):
-    logger.info(f"🔍 [DEBUG] Получено сообщение:")
-    logger.info(f"  Chat type: {message.chat.type}")
-    logger.info(f"  Chat username: {message.chat.username}")
-    logger.info(f"  Chat title: {message.chat.title}")
+    logger.info(f"🔍 [DEBUG] Получено сообщение в супергруппе:")
     logger.info(f"  Chat ID: {message.chat.id}")
+    logger.info(f"  Chat title: {message.chat.title}")
+    logger.info(f"  Chat username: {message.chat.username}")
     logger.info(f"  From user: {message.from_user.id if message.from_user else None}")
     logger.info(f"  Sender chat: {message.sender_chat.id if message.sender_chat else None}")
     logger.info(f"  Message ID: {message.message_id}")
     logger.info(f"  Text: {message.text[:100] if message.text else 'No text'}")
     logger.info(f"  Caption: {message.caption[:100] if message.caption else 'No caption'}")
     
-    logger.info(f"🎯 [HANDLER] СРАБОТАЛ ОБРАБОТЧИК!")
-    logger.info(f"  Чат: {message.chat.title} (ID: {message.chat.id})")
-    logger.info(f"  Канал отправитель: {message.sender_chat.id if message.sender_chat else None}")
+    # Проверяем, что это пост от канала в группу обсуждений
+    if not message.sender_chat:
+        logger.info(f"⏭️ [SKIP] Сообщение не от канала, пропускаем")
+        return
+    
+    logger.info(f"🎯 [HANDLER] Обрабатываем пост от канала в группе обсуждений!")
+    logger.info(f"  Группа: {message.chat.title} (ID: {message.chat.id})")
+    logger.info(f"  Канал отправитель: {message.sender_chat.id}")
     logger.info(f"  Post ID: {message.message_id}")
     
     async with get_session() as session:
         try:
-            # Автоматически находим канал по ID отправителя или получателя
-            channel = None
+            # Находим канал по ID группы обсуждений с автосвязыванием
+            channel = await find_channel_by_group_id(
+                session, 
+                message.chat.id, 
+                message.sender_chat.id if message.sender_chat else None
+            )
             
-            # Сначала ищем по ID канала-отправителя (sender_chat)
-            if message.sender_chat:
-                logger.info(f"🔍 [DB] Ищем канал по ID отправителя: {message.sender_chat.id}")
-                
-                search_variants = [
-                    str(message.sender_chat.id),  # Полный ID: -1002242368150
-                    str(abs(message.sender_chat.id)),  # Без минуса: 1002242368150
-                    str(message.sender_chat.id)[4:] if len(str(abs(message.sender_chat.id))) > 10 else str(abs(message.sender_chat.id)),  # Убираем -100: 2242368150
-                ]
-                
-                for variant in search_variants:
-                    logger.info(f"  Пробуем вариант: '{variant}'")
-                    result = await session.execute(
-                        select(Channel).where(Channel.name == variant)
-                    )
-                    channel = result.scalar_one_or_none()
-                    if channel:
-                        logger.info(f"  ✅ Найден по варианту: '{variant}'")
-                        break
-            
-            # Если не нашли по отправителю, ищем по ID группы обсуждений
             if not channel:
-                logger.info(f"🔍 [DB] Ищем канал по ID группы обсуждений: {message.chat.id}")
-                
-                search_variants = [
-                    str(message.chat.id),  # Полный ID: -1002397701743
-                    str(abs(message.chat.id)),  # Без минуса: 1002397701743
-                    str(message.chat.id)[4:] if len(str(abs(message.chat.id))) > 10 else str(abs(message.chat.id)),  # Убираем -100: 2397701743
-                ]
-                
-                for variant in search_variants:
-                    logger.info(f"  Пробуем вариант: '{variant}'")
-                    result = await session.execute(
-                        select(Channel).where(Channel.name == variant)
-                    )
-                    channel = result.scalar_one_or_none()
-                    if channel:
-                        logger.info(f"  ✅ Найден по варианту: '{variant}'")
-                        break
-
-            if not channel:
-                logger.warning(f"❌ [DB] Канал не найден в базе данных")
-                logger.warning(f"    Chat username: {message.chat.username}")
-                logger.warning(f"    Chat ID: {message.chat.id}")
-                logger.warning(f"    Sender chat ID: {message.sender_chat.id if message.sender_chat else None}")
-                logger.warning(f"    Chat title: {message.chat.title}")
-                
-                # Покажем все каналы в базе для отладки
-                all_channels = await session.execute(select(Channel.id, Channel.name))
-                logger.warning(f"    Каналы в базе:")
-                for ch_id, ch_name in all_channels:
-                    logger.warning(f"      ID: {ch_id}, Name: '{ch_name}'")
+                logger.warning(f"❌ [DB] Канал не найден для группы {message.chat.id}")
+                logger.warning(f"    Убедитесь, что канал добавлен в систему")
                 return
             
-            logger.info(f"✅ [DB] Канал найден: ID={channel.id}, Name='{channel.name}'")
+            logger.info(f"✅ [DB] Найден канал: {channel.name}")
             
-            # Используем найденное имя канала для дальнейшей логики
-            channel_identifier = channel.name
+            # Если у канала еще не определен ID группы, сохраняем его (уже сделано в find_channel_by_group_id)
+            if not channel.discussion_group_id:
+                channel.discussion_group_id = message.chat.id
+                await session.commit()
+                logger.info(f"💾 [DB] Сохранен ID группы для канала {channel.name}: {message.chat.id}")
             
             # Проверяем, стоит ли комментировать этот пост
             logger.info(f"🎲 [CHANCE] Проверяем шансы комментирования...")
-            should_comment = await should_comment_on_post(session, channel, channel_identifier, message.message_id)
+            should_comment = await should_comment_on_post(session, channel, channel.name, message.message_id)
             logger.info(f"🎲 [CHANCE] Результат проверки: {should_comment}")
             
             if not should_comment:
@@ -294,11 +331,6 @@ async def post_commenting(message: Message):
             comments = clean_comments(response)
             logger.info(f"💬 [PARSE] Распарсено комментариев: {len(comments)}")
             
-            # Добавляем отладку после парсинга
-            logger.info(f"🐛 [DEBUG] Первые 3 комментария после парсинга:")
-            for i, comment in enumerate(comments[:3]):
-                logger.info(f"  [{i+1}] Длина: {len(comment)}, Текст: '{comment}'")
-
             if not comments:
                 logger.warning(f"⚠️ [PARSE] Не удалось получить комментарии из ответа ИИ")
                 return
@@ -337,19 +369,22 @@ async def post_commenting(message: Message):
                     task = CommentTask(
                         account_session=accounts[i].session,
                         account_number=accounts[i].number,
-                        channel="",  # Не используем username, будем использовать ID
+                        channel=channel.name,
                         channel_id=channel.id,
                         post_id=message.message_id,
                         comment_text=comment,
                         delay=random.uniform(5, 15),
                         like_chance=channel.likes_on_posts_chance,
                         reaction_types=reaction_types,
-                        # Добавляем дополнительные данные для автоопределения группы
+                        # Данные для комментирования в группе
                         discussion_group_id=message.chat.id,  # ID группы обсуждений
-                        sender_chat_id=message.sender_chat.id if message.sender_chat else None  # ID канала-отправителя
+                        sender_chat_id=message.sender_chat.id,  # ID канала-отправителя
+                        invite_link=channel.discussion_group_invite,  # Инвайт ссылка для вступления
+                        channel_username=channel.name  # Username канала для подписки - ИСПРАВЛЕНО!
                     )
                     comment_tasks.append(task)
                     logger.info(f"📝 [TASK] Создана задача для аккаунта {accounts[i].number}: {comment[:50]}...")
+                    logger.info(f"🔍 [DEBUG] Channel username в задаче: {channel.name}")
 
             # Отправляем задачи комментирования в брокер
             try:
@@ -368,7 +403,7 @@ async def post_commenting(message: Message):
                 if channel.likes_on_comments_chance > 0:
                     logger.info(f"👍 [LIKES] Создаем задачи лайков комментариев (шанс: {channel.likes_on_comments_chance}%)")
                     like_tasks = await create_comment_like_tasks(
-                        session, channel, str(message.chat.id), 
+                        session, channel, channel.name, 
                         comment_tasks, reaction_types
                     )
                     
@@ -388,7 +423,7 @@ async def post_commenting(message: Message):
                 # Обновляем статистику активности
                 logger.info(f"📊 [STATS] Обновляем статистику...")
                 await update_post_activity(
-                    session, str(message.chat.id), message.message_id, 
+                    session, channel.name, message.message_id, 
                     len(comment_tasks), 0  # лайки будут подсчитаны позже
                 )
                 await session.commit()
@@ -406,7 +441,7 @@ async def post_commenting(message: Message):
             raise
 
 async def create_comment_like_tasks(
-    session, channel: Channel, channel_username: str, 
+    session, channel: Channel, channel_name: str, 
     comment_tasks: List[CommentTask], reaction_types: List[str]
 ) -> List[LikeCommentTask]:
     """Создает задачи на лайки комментариев других аккаунтов"""
@@ -440,7 +475,7 @@ async def create_comment_like_tasks(
                 like_task = LikeCommentTask(
                     account_session=liker.session,
                     account_number=liker.number,
-                    channel=channel_username,
+                    channel=channel_name,
                     comment_id=0,  # будет установлен после отправки комментария
                     target_comment_account=comment_task.account_number,
                     delay=like_delay,

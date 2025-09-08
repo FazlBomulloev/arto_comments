@@ -15,6 +15,7 @@ import zipfile
 import os
 from pathlib import Path
 import shutil
+import re
 
 
 # Главное меню управления каналами
@@ -58,6 +59,8 @@ async def channel_actions_getter(dialog_manager: DialogManager, **kwargs):
 
     return {
         "channel_name": channel.name,
+        "discussion_group_invite": channel.discussion_group_invite,
+        "discussion_group_id": channel.discussion_group_id or "Не определен",
         "agents": agents_with_status,
         "active_agent": active_agent.description if active_agent else "Не выбран",
         
@@ -67,9 +70,9 @@ async def channel_actions_getter(dialog_manager: DialogManager, **kwargs):
         "comments_number_range": channel.comments_number_range,
         
         # Новые параметры выбора постов
-        "posts_selection_chance": channel.posts_selection_chance,
-        "posts_min_interval": channel.posts_min_interval,
-        "posts_max_interval": channel.posts_max_interval,
+        "post_selection_chance": channel.post_selection_chance,
+        "post_min_interval": channel.post_min_interval,
+        "post_max_interval": channel.post_max_interval,
         
         # Параметры лайков
         "likes_on_posts_chance": channel.likes_on_posts_chance,
@@ -80,11 +83,38 @@ async def channel_actions_getter(dialog_manager: DialogManager, **kwargs):
 
 # Геттер для окна подтверждения добавления канала
 async def confirm_channel_getter(dialog_manager: DialogManager, **kwargs):
-    channel_name = dialog_manager.dialog_data.get('new_channel_name', '')
+    channel_username = dialog_manager.dialog_data.get('channel_username', '')
+    invite_link = dialog_manager.dialog_data.get('invite_link', '')
     return {
-        "channel_name": channel_name,
-        "channel_url": f"https://t.me/{channel_name.lstrip('@')}"
+        "channel_username": channel_username,
+        "invite_link": invite_link,
+        "channel_url": f"https://t.me/{channel_username.lstrip('@')}" if channel_username else ""
     }
+
+def extract_invite_hash(invite_link: str) -> str:
+    patterns = [
+        r't\.me/\+([A-Za-z0-9_-]+)',          # https://t.me/+HASH
+        r't\.me/joinchat/([A-Za-z0-9_-]+)',   # https://t.me/joinchat/HASH
+        r't\.me/([A-Za-z0-9_]+)'              # https://t.me/username
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, invite_link)
+        if match:
+            return match.group(1)
+    
+    return None
+
+def validate_username(username: str) -> bool:
+    """Проверяет корректность username канала"""
+    # Убираем @ если есть
+    username = username.lstrip('@')
+    # Проверяем формат: 5-32 символа, только буквы, цифры и _
+    return bool(re.match(r'^[a-zA-Z][a-zA-Z0-9_]{4,31}$', username))
+
+def validate_invite_link(invite_link: str) -> bool:
+    """Проверяет корректность инвайт ссылки"""
+    return extract_invite_hash(invite_link) is not None
 
 # Обработчики кнопок
 async def on_channel_selected(c: CallbackQuery, widget: Select, manager: DialogManager, item_id: str):
@@ -94,9 +124,10 @@ async def on_channel_selected(c: CallbackQuery, widget: Select, manager: DialogM
 
 async def on_add_channel(c: CallbackQuery, button: Button, manager: DialogManager):
     # Очищаем предыдущие данные
-    manager.dialog_data.pop('new_channel_name', None)
-    # Переходим в состояние ожидания ввода названия канала
-    await manager.switch_to(channels.enter_channel_name)
+    manager.dialog_data.pop('channel_username', None)
+    manager.dialog_data.pop('invite_link', None)
+    # Переходим в состояние ожидания ввода username канала
+    await manager.switch_to(channels.enter_channel_username)
 
 
 async def on_delete_channel(c: CallbackQuery, button: Button, manager: DialogManager):
@@ -162,29 +193,34 @@ async def on_add_accounts(c: CallbackQuery, button: Button, manager: DialogManag
     await manager.start(state=accounts.wait_zip_file, show_mode=ShowMode.EDIT, data={'channel_id':channel_id})
 
 async def on_confirm_channel(c: CallbackQuery, button: Button, manager: DialogManager):
-    channel_name = manager.dialog_data.get('new_channel_name')
-    if not channel_name:
-        await c.answer("Ошибка: имя канала не указано", show_alert=True)
+    channel_username = manager.dialog_data.get('channel_username')
+    invite_link = manager.dialog_data.get('invite_link')
+    
+    if not channel_username or not invite_link:
+        await c.answer("Ошибка: не указаны все данные", show_alert=True)
         return
 
     async with get_session() as session:
         # Проверяем, существует ли уже такой канал
         existing_channel = await session.execute(
-            select(Channel).where(Channel.name == channel_name))
+            select(Channel).where(Channel.name == channel_username))
         existing_channel = existing_channel.scalar_one_or_none()
 
         if existing_channel:
             await c.answer(
-                f"Канал {channel_name} уже существует!",
+                f"Канал {channel_username} уже существует!",
                 show_alert=True
             )
             return
 
         # Если канала нет - добавляем
-        new_channel = Channel(name=channel_name)
+        new_channel = Channel(
+            name=channel_username,
+            discussion_group_invite=invite_link
+        )
         session.add(new_channel)
         await session.commit()
-        await c.answer(f"Канал {channel_name} успешно добавлен", show_alert=True)
+        await c.answer(f"Канал {channel_username} успешно добавлен", show_alert=True)
         await manager.switch_to(state=channels.main_menu)
 
 # Универсальный обработчик для редактирования параметров канала
@@ -385,18 +421,18 @@ channel_actions_group = Group(
     
     # Параметры выбора постов
     Button(
-        Format("Шанс выбора поста: {posts_selection_chance}%"),
-        id="posts_selection_chance",
+        Format("Шанс выбора поста: {post_selection_chance}%"),
+        id="post_selection_chance",
         on_click=on_edit_param,
     ),
     Button(
-        Format("Мин интервал постов: {posts_min_interval} мин"),
-        id="posts_min_interval",
+        Format("Мин интервал постов: {post_min_interval} мин"),
+        id="post_min_interval",
         on_click=on_edit_param,
     ),
     Button(
-        Format("Макс интервал постов: {posts_max_interval} мин"),
-        id="posts_max_interval",
+        Format("Макс интервал постов: {post_max_interval} мин"),
+        id="post_max_interval",
         on_click=on_edit_param,
     ),
     
@@ -456,33 +492,60 @@ channel_actions_group = Group(
     Back(Const("НАЗАД")),
 )
 
-async def on_channel_name_entered(message: Message, widget: TextInput, manager: DialogManager, text: str):
+async def on_channel_username_entered(message: Message, widget: TextInput, manager: DialogManager, text: str):
+    # Валидация username
+    if not validate_username(text):
+        await message.answer("❌ Некорректный username канала!\n\nПример: @mychannel или mychannel")
+        return
+    
     await message.delete()
-    manager.dialog_data['new_channel_name'] = text
+    # Убираем @ если есть и добавляем обратно для единообразия
+    clean_username = text.lstrip('@')
+    manager.dialog_data['channel_username'] = f"@{clean_username}"
+    await manager.switch_to(channels.enter_invite_link, show_mode=ShowMode.EDIT)
+
+async def on_invite_link_entered(message: Message, widget: TextInput, manager: DialogManager, text: str):
+    # Валидация инвайт ссылки
+    if not validate_invite_link(text):
+        await message.answer("❌ Некорректная инвайт ссылка!")
+        return
+    
+    await message.delete()
+    manager.dialog_data['invite_link'] = text
     await manager.switch_to(channels.confirm_channel, show_mode=ShowMode.EDIT)
 
-# Виджеты для ожидания ввода названия канала
-enter_channel_name_window = Window(
-    Const("Введите название канала (например, @channel_name):"),
-    TextInput(id="channel_name_input",
-        on_success=on_channel_name_entered),
+# Виджеты для ожидания ввода username канала
+enter_channel_username_window = Window(
+    Const("Введите username канала:\n\n<b>Пример:</b> @mychannel или mychannel"),
+    TextInput(id="channel_username_input",
+        on_success=on_channel_username_entered),
     SwitchTo(Const("НАЗАД"), state=channels.main_menu, id='channel_back_button'),
-    state=channels.enter_channel_name,
+    state=channels.enter_channel_username,
+)
+
+# Виджеты для ожидания ввода инвайт ссылки
+enter_invite_link_window = Window(
+    Const("Введите инвайт ссылку на группу обсуждений:"),
+    TextInput(id="invite_link_input",
+        on_success=on_invite_link_entered),
+    Back(Const("НАЗАД")),
+    state=channels.enter_invite_link,
 )
 
 # Виджеты для подтверждения добавления канала
 confirm_channel_group = Group(
     Button(
-        Const("ДА, ЭТО МОЙ КАНАЛ"),
+        Const("✅ ПОДТВЕРДИТЬ"),
         id="confirm_add_channel",
         on_click=on_confirm_channel,
     ),
     Url(
-        Const("ВАШ КАНАЛ?"),
+        Const("🔗 КАНАЛ"),
         id="channel_url",
         url=Format("{channel_url}"),
+        when="channel_url"
     ),
-    Back(Const("Назад")),
+    Back(Const("НАЗАД")),
 )
 
 # Диалоги
@@ -502,13 +565,15 @@ channels_dialog = Dialog(
     Window(
         Format(
             "<b>Канал:</b> <i>{channel_name}</i>\n"
+            "<b>Инвайт группы:</b> <code>{discussion_group_invite}</code>\n"
+            "<b>ID группы:</b> <code>{discussion_group_id}</code>\n"
             "<b>Текущий агент:</b> {active_agent}\n\n"
             "<b>📝 Комментарии:</b>\n"
             "• Шанс: {comments_chance}%\n"
             "• Количество: {comments_number} ± {comments_number_range}\n\n"
             "<b>📊 Выбор постов:</b>\n"
-            "• Шанс выбора: {posts_selection_chance}%\n"
-            "• Интервал: {posts_min_interval}-{posts_max_interval} мин\n\n"
+            "• Шанс выбора: {post_selection_chance}%\n"
+            "• Интервал: {post_min_interval}-{post_max_interval} мин\n\n"
             "<b>👍 Лайки:</b>\n"
             "• На посты: {likes_on_posts_chance}%\n"
             "• На комментарии: {likes_on_comments_chance}%\n"
@@ -518,9 +583,14 @@ channels_dialog = Dialog(
         state=channels.channel_menu,
         getter=channel_actions_getter,
     ),
-    enter_channel_name_window,
+    enter_channel_username_window,
+    enter_invite_link_window,
     Window(
-        Format("Проверьте канал перед добавлением:\n\nНазвание: {channel_name}"),
+        Format(
+            "Проверьте данные перед добавлением:\n\n"
+            "<b>Username канала:</b> {channel_username}\n"
+            "<b>Инвайт ссылка группы:</b> <code>{invite_link}</code>"
+        ),
         confirm_channel_group,
         state=channels.confirm_channel,
         getter=confirm_channel_getter,

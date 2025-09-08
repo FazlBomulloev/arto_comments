@@ -103,7 +103,7 @@ async def handle_comment_tasks(msg: CommentTaskMessage):
             logger.info(f"📋 [TASK-{i+1}] Канал: {task.channel}, Пост: {task.post_id}, Аккаунт: {task.account_number}")
             logger.info(f"    Комментарий: {task.comment_text[:100]}...")
             logger.info(f"    Группа обсуждений: {task.discussion_group_id}")
-            logger.info(f"    Канал-отправитель: {task.sender_chat_id}")
+            logger.info(f"    Инвайт ссылка: {task.invite_link}")
 
         # Получаем параметры задержки из БД
         logger.info(f"⏱️ [DELAY] Получаем параметры задержки из БД...")
@@ -190,24 +190,24 @@ async def handle_like_comment_tasks(msg: LikeCommentTaskMessage):
         raise
 
 async def process_comment_task(task: CommentTask):
-    """Обработка одной задачи комментирования"""
+    """Обработка одной задачи комментирования с новой логикой"""
     from src.accounts.comment import post_comment_with_session
     from telethon.tl.types import ReactionEmoji
 
     # Отладка задачи
-    logger.info(f"🐛 [TASK DEBUG] Обработка задачи:")
+    logger.info(f"🐛 [TASK DEBUG] [{task.account_number}] Обработка задачи:")
     logger.info(f"  Channel: '{task.channel}'")
     logger.info(f"  Comment text: '{task.comment_text}'")
     logger.info(f"  Comment length: {len(task.comment_text)}")
-    logger.info(f"  Comment repr: {repr(task.comment_text)}")
     logger.info(f"  Discussion group ID: {task.discussion_group_id}")
-    logger.info(f"  Sender chat ID: {task.sender_chat_id}")
+    logger.info(f"  Invite link: {task.invite_link}")
 
     class MockChat:
         def __init__(self, chat_id, chat_type='supergroup'):
             self.id = chat_id
             self.type = chat_type
             self.username = None
+            self.title = f"Group {chat_id}"
 
     class MockMessage:
         def __init__(self, chat, message_id, sender_chat_id=None):
@@ -220,7 +220,7 @@ async def process_comment_task(task: CommentTask):
                 self.sender_chat = None
 
     try:
-        logger.info(f"📝 [PROCESS] Начало обработки комментария для группы {task.discussion_group_id}, пост {task.post_id}")
+        logger.info(f"📝 [PROCESS] [{task.account_number}] Начало обработки комментария для группы {task.discussion_group_id}, пост {task.post_id}")
 
         # Создаем объекты для работы с Telegram
         # Используем ID группы обсуждений как целевой чат
@@ -234,12 +234,15 @@ async def process_comment_task(task: CommentTask):
         # Подготавливаем реакции
         available_reactions = [ReactionEmoji(emoticon=emoji) for emoji in task.reaction_types]
 
+        # Вызываем обновленную функцию с новыми параметрами
         result = await post_comment_with_session(
             session_data=task.account_session,
             message=mock_message,
             comment_text=task.comment_text,
             like_chance=task.like_chance,
-            available_reactions=available_reactions
+            available_reactions=available_reactions,
+            invite_link=task.invite_link,  # Новый параметр
+            account_number=task.account_number  # Новый параметр для логирования
         )
 
         # Обновляем статистику в БД
@@ -250,6 +253,9 @@ async def process_comment_task(task: CommentTask):
                     account.comments_sent += 1
                 if result["like_given"]:
                     account.likes_given += 1
+                if result["joined_group"]:
+                    account.joined_group = True
+                # Можно добавить поле для отслеживания подписки на канал
                 account.last_activity = datetime.now()
                 
                 # Записываем информацию о комментарии для будущих лайков
@@ -265,26 +271,28 @@ async def process_comment_task(task: CommentTask):
                 await session.commit()
 
         if result["success"]:
-            logger.info(f"✅ [PROCESS] Комментарий успешно отправлен в группу {task.discussion_group_id}")
+            logger.info(f"✅ [PROCESS] [{task.account_number}] Комментарий успешно отправлен в группу {task.discussion_group_id}")
         else:
-            logger.warning(f"⚠️ [PROCESS] Не удалось отправить комментарий в группу {task.discussion_group_id}: {result.get('error')}")
+            logger.warning(f"⚠️ [PROCESS] [{task.account_number}] Не удалось отправить комментарий в группу {task.discussion_group_id}: {result.get('error')}")
 
         return result
 
     except Exception as e:
-        logger.error(f"❌ [PROCESS] Ошибка обработки задачи комментирования: {e}")
+        logger.error(f"❌ [PROCESS] [{task.account_number}] Ошибка обработки задачи комментирования: {e}")
         raise
 
 async def process_like_comment_task(task: LikeCommentTask):
-    """Обработка одной задачи лайка комментария"""
+    """Обработка одной задачи лайка комментария с новой логикой"""
     from src.accounts.comment import like_comment_with_session
     from telethon.tl.types import ReactionEmoji
 
     try:
-        logger.info(f"👍 [LIKE] Начало обработки лайка комментария в канале {task.channel}")
+        logger.info(f"👍 [LIKE] [{task.account_number}] Начало обработки лайка комментария")
 
         # Если comment_id не указан, ищем комментарий по аккаунту
         comment_id = task.comment_id
+        group_id = None
+        
         if comment_id == 0:
             async with get_session() as session:
                 # Ищем последний комментарий от целевого аккаунта
@@ -301,18 +309,37 @@ async def process_like_comment_task(task: LikeCommentTask):
                 
                 if comment_activity:
                     comment_id = comment_activity.comment_id
+                    # Пытаемся извлечь group_id из channel_name (если это ID)
+                    try:
+                        group_id = int(comment_activity.channel_name)
+                    except ValueError:
+                        logger.warning(f"⚠️ [LIKE] [{task.account_number}] Не удалось определить group_id из {comment_activity.channel_name}")
+                        return False
                 else:
-                    logger.warning(f"⚠️ [LIKE] Не найден комментарий для лайка от {task.target_comment_account}")
+                    logger.warning(f"⚠️ [LIKE] [{task.account_number}] Не найден комментарий для лайка от {task.target_comment_account}")
                     return False
+        else:
+            # Если comment_id указан, пытаемся извлечь group_id из task.channel
+            try:
+                group_id = int(task.channel)
+            except ValueError:
+                logger.warning(f"⚠️ [LIKE] [{task.account_number}] Не удалось определить group_id из {task.channel}")
+                return False
+
+        if not group_id:
+            logger.error(f"❌ [LIKE] [{task.account_number}] Не удалось определить ID группы")
+            return False
 
         # Подготавливаем реакции
         available_reactions = [ReactionEmoji(emoticon=emoji) for emoji in task.reaction_types]
 
+        # Вызываем обновленную функцию лайка
         success = await like_comment_with_session(
             session_data=task.account_session,
-            channel_username=task.channel,
+            group_id=group_id,  # Передаем ID группы напрямую
             comment_id=comment_id,
-            available_reactions=available_reactions
+            available_reactions=available_reactions,
+            account_number=task.account_number  # Для логирования
         )
 
         # Обновляем статистику
@@ -337,7 +364,7 @@ async def process_like_comment_task(task: LikeCommentTask):
         return success
 
     except Exception as e:
-        logger.error(f"❌ [LIKE] Ошибка обработки задачи лайка комментария: {e}")
+        logger.error(f"❌ [LIKE] [{task.account_number}] Ошибка обработки задачи лайка комментария: {e}")
         raise
 
 async def restore_tasks():

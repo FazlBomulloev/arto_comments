@@ -18,7 +18,10 @@ class Channel(Base):
     __tablename__ = 'channels'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), nullable=False)
+    name = Column(String(100), nullable=False)  # @channelname (username канала)
+    discussion_group_invite = Column(String(255), nullable=False)  # https://t.me/+xxxxx (инвайт на группу)
+    discussion_group_id = Column(BigInteger, nullable=True)  # ID группы (определяется автоматически)
+    
     acc_male_name_list = Column(Text)
     acc_female_name_list = Column(Text)
     acc_male_photo_list = Column(Text)
@@ -49,6 +52,7 @@ class Account(Base):
     channel_id = Column(Integer, ForeignKey('channels.id'))
     fail = Column(Integer, default=0)  # Счетчик неудачных попыток
     status = Column(String(10), default='active')
+    joined_group = Column(Boolean, default=False)  # Вступил ли в группу обсуждений
     
     # Новые поля для статистики
     comments_sent = Column(Integer, default=0)  # Количество отправленных комментариев
